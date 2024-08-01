@@ -1,0 +1,35 @@
+version: 0.2
+phases:
+  install:
+    commands:
+      - echo "Installing kubectl"
+      - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"   
+      - chmod +x ./kubectl
+      - mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$PATH:$HOME/bin                
+  pre_build:
+    commands:
+      - echo "Starting docker daemon..."
+      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2&
+      - timeout 15 sh -c "until docker info; do echo .; sleep 1; done"
+      - echo "Logging into Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - echo "Login AWS EKS"
+      - aws eks --region $AWS_DEFAULT_REGION update-kubeconfig --name $AWS_CLUSTER_NAME
+  build:
+    commands:
+      - echo Build started on `date`
+      - docker build -t ${REPOSITORY_NAME}:latest .
+      - docker tag ${REPOSITORY_NAME}:latest ${REPOSITORY_URI}:latest
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo "Pushing Docker image to ECR"
+      - docker push "${REPOSITORY_URI}:latest"
+      - printf '{"Tag":"%s","RepositoryUri":"%s"}' $TAG $REPOSITORY_URI $PROJECT_NAME $ARTIFACT_BUCKET > build.json
+      - echo "Deploy to EKS"
+      - kubectl set image -n $NAMESPACE deployment/$DEPLOYMENT $IMAGENAME=${REPOSITORY_URI}:${TAG}
+      - kubectl rollout restart deployment/$DEPLOYMENT
+      - kubectl get deployment -n $NAMESPACE
+      - kubectl get pod -n $NAMESPACE
+      - echo Deploy ended on `date`                            
+
